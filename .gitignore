@@ -1,0 +1,38 @@
+# Dependencies
+
+node_modules/
+
+# Next.js generated files
+
+.next/
+out/
+
+# Backend build output
+
+dist/
+dist-server/
+
+# Environment secrets
+
+.env
+.env.*
+!.env.example
+
+# SQLite database and local uploads
+
+data/
+uploads/
+
+# Logs
+
+*.log
+npm-debug.log*
+
+# TypeScript generated files
+
+*.tsbuildinfo
+
+# Operating system files
+
+.DS_Store
+Thumbs.db
