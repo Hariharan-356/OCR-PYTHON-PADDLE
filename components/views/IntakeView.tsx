@@ -1,13 +1,14 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useClaimsStore } from '../../lib/store';
 import { fmtINR } from '../../lib/data';
-import { validateFile, createClaimFromUpload, computeVariances, computeExceptions } from '../../lib/engine';
+import { validateFile, computeVariances, computeExceptions } from '../../lib/engine';
 
 export function IntakeView() {
   const {
     claims,
+    setClaims,
     addClaim,
     providers,
     rules,
@@ -19,11 +20,11 @@ export function IntakeView() {
     exceptions,
   } = useClaimsStore();
 
-  const [source, setSource] = useState('IHX');
+  const [source, setSource] = useState('');
   const [attachClaimId, setAttachClaimId] = useState('');
-  const [providerId, setProviderId] = useState(providers[0]?.id || 'PRV-001');
+  const [providerId, setProviderId] = useState(providers[0]?.id || '');
   const [memberId, setMemberId] = useState('');
-  const [pendingFiles, setPendingFiles] = useState<Array<{ name: string; size: number; error?: string | null; sample?: boolean }>>([]);
+  const [pendingFiles, setPendingFiles] = useState<Array<{ name: string; size: number; error?: string | null; sample?: boolean; file?: File }>>([]);
   const [isIngesting, setIsIngesting] = useState(false);
   const [ingestProgress, setIngestProgress] = useState(0);
   const [ingestSteps, setIngestSteps] = useState<Array<{ title: string; note: string; done: boolean }>>([]);
@@ -31,6 +32,12 @@ export function IntakeView() {
   const [isDragOver, setIsDragOver] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (providers.length && !providerId) {
+      setProviderId(providers[0].id);
+    }
+  }, [providers, providerId]);
 
   const todayClaims = claims.filter(c => {
     const hours = (Date.now() - new Date(c.receivedAt).getTime()) / 3600e3;
@@ -42,16 +49,30 @@ export function IntakeView() {
   const breachedCount = exceptions.filter(e => e.sla === 'Breached').length;
   const atRiskCount = exceptions.filter(e => e.sla === 'At risk').length;
 
-  const handleAddFiles = (newFiles: File[] | Array<{ name: string; size: number; sample?: boolean }>) => {
+  const channelData = Array.from(
+    claims.reduce((map, claim) => {
+      const key = claim.source || 'Manual upload';
+      map.set(key, (map.get(key) || 0) + 1);
+      return map;
+    }, new Map<string, number>())
+  ).map(([name, count]) => ({
+    name,
+    value: claims.length ? Math.max(5, Math.round((count / claims.length) * 100)) : 0,
+    detail: `${count} claim(s)`,
+  }));
+
+  const handleAddFiles = (newFiles: File[] | Array<{ name: string; size: number; sample?: boolean; file?: File }>) => {
     const updated = [...pendingFiles];
     newFiles.forEach(f => {
+      const file = f instanceof File ? f : (f as any).file instanceof File ? (f as any).file : undefined;
       if (updated.some(p => p.name === f.name && p.size === f.size)) return;
-      const error = validateFile(f, rules);
+      const error = file ? validateFile(file, rules) : validateFile(new File([''], f.name, { type: 'application/octet-stream' }), rules);
       updated.push({
         name: f.name,
         size: f.size,
         error,
         sample: (f as any).sample,
+        file,
       });
     });
     setPendingFiles(updated);
@@ -91,87 +112,82 @@ export function IntakeView() {
     const currentStepList = steps.map(([t, n]) => ({ title: t, note: n, done: false }));
     setIngestSteps(currentStepList);
 
-    let claim: any = null;
+    const formData = new FormData();
+    pendingFiles.forEach(file => {
+      const filename = file.name.toLowerCase();
+      const type = filename.endsWith('.pdf') ? 'application/pdf' : filename.endsWith('.jpg') || filename.endsWith('.jpeg') ? 'image/jpeg' : filename.endsWith('.png') ? 'image/png' : 'application/octet-stream';
+      const actualFile = file.file instanceof File
+        ? file.file
+        : new File([`Hospital Bill\nPatient: Sample claimant\nMember ID: MEM-900112\nPolicy: GHP-2026-004500\nHospital: Apollo Hospitals Chennai\nDate of admission: 14/10/2026\nDate of discharge: 16/10/2026\nTotal amount paid: ₹24500\n`], file.name, { type });
+      formData.append('files', actualFile);
+    });
 
-    for (let i = 0; i < steps.length; i++) {
-      setIngestProgress(Math.round((100 * (i + 0.5)) / steps.length));
-      await sleep(i === 2 ? 800 : i === 3 ? 600 : 400);
+    if (source) {
+      formData.append('source', source);
+    }
+    if (attachClaimId) {
+      formData.append('claimId', attachClaimId);
+    }
+    if (memberId) {
+      formData.append('memberId', memberId);
+    }
 
-      let note = '';
-      if (i === 1) {
-        claim = createClaimFromUpload(pendingFiles, source, providerId, memberId, claims, user.id);
-        note = `Created ${claim.id} for ${claim.patient}`;
-        // Persist files to NestJS local filesystem (uploads/) and metadata to SQLite
-        try {
-          const formData = new FormData();
-          pendingFiles.forEach(f => {
-            formData.append('files', new Blob([`Simulated document content for ${f.name}`], { type: 'application/pdf' }), f.name);
-          });
-          formData.append('claimId', claim.id);
-          fetch('http://localhost:3001/api/upload', {
-            method: 'POST',
-            body: formData,
-          }).catch(() => {});
-        } catch (_) {}
-      }
-      if (i === 2 && claim) {
-        const nf = claim.docs.reduce((s: number, d: any) => s + d.fields.length, 0);
-        const low = claim.docs.reduce((s: number, d: any) => s + d.fields.filter((x: any) => x.conf < rules.confidenceThreshold).length, 0);
-        note = `${nf} fields extracted · ${low} below ${rules.confidenceThreshold}% threshold`;
-        claim.stage = 2;
-      }
-      if (i === 3 && claim) {
-        const pages = claim.docs.reduce((s: number, d: any) => s + d.pages.length, 0);
-        note = `${claim.docs.length} documents, ${pages} pages · ${claim.docs.filter((d: any) => d.medical).length} medical / ${
-          claim.docs.filter((d: any) => !d.medical).length
-        } non-medical · 0.8 s`;
-        claim.stage = 3;
-      }
-      if (i === 4 && claim) {
-        note = `Primary diagnosis ${claim.diagnoses[0]?.icd || 'K35.80'}; ${claim.lineItems.length} line items structured`;
-        claim.stage = 4;
-      }
-      if (i === 5 && claim) {
-        note = `Version TV-APO-2026 effective 2026-01-01 · 9 code, 3 fuzzy, 1 unmatched`;
-        claim.stage = 5;
-      }
-      if (i === 6 && claim) {
-        const vs = computeVariances(claim, rules, providers);
-        note = vs.length ? `${vs.length} flag(s) · ${fmtINR(vs.reduce((s, v) => s + v.amount, 0))}` : 'No variances';
-        claim.stage = 6;
-        claim.status = vs.length ? 'Variance review' : 'In review';
-        if (vs.length) {
-          addNotification(
-            `${vs.length} variances flagged on ${claim.id} (${fmtINR(vs.reduce((s, v) => s + v.amount, 0))})`,
-            'warn',
-            `#/claims/${claim.id}/variances`
-          );
-        }
-      }
-      if (i === 7 && claim) {
-        const ex = computeExceptions([claim], rules, providers);
-        note = `${ex.length} exception(s) queued`;
-        if (!ex.length) {
-          claim.status = 'Approved';
-          claim.stage = 7;
-        }
-      }
+    let uploadResult: any = null;
+    let claimList: any[] = [];
 
-      currentStepList[i] = {
-        title: steps[i][0],
-        note: note || steps[i][1],
-        done: true,
-      };
+    try {
+      setIngestProgress(30);
+      currentStepList[1] = { ...currentStepList[1], note: `Uploading ${pendingFiles.length} document(s) to the API`, done: true };
       setIngestSteps([...currentStepList]);
+
+      const response = await fetch('http://localhost:3001/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      uploadResult = response.ok ? await response.json() : null;
+      if (!uploadResult || !uploadResult.jobId) {
+        throw new Error('Upload accepted but no OCR job was returned.');
+      }
+
+      const liveClaims = await fetch('http://localhost:3001/api/claims')
+        .then(r => (r.ok ? r.json() : []))
+        .catch(() => []);
+      claimList = Array.isArray(liveClaims) ? liveClaims : [];
+      setClaims(claimList);
+
+      const createdClaimData = claimList
+        .filter((claimItem: any) => claimItem && typeof claimItem === 'object')
+        .sort((a: any, b: any) => new Date(b.receivedAt || 0).getTime() - new Date(a.receivedAt || 0).getTime())
+        .find((claimItem: any) => {
+          const targetId = uploadResult?.claimId || uploadResult?.jobId;
+          if (targetId && claimItem.id === targetId) return true;
+          const sourceName = String(claimItem.source || '').trim();
+          const isGenericOcrSource = !sourceName || /^ocr$/i.test(sourceName);
+          return !isGenericOcrSource || !!claimItem.patient;
+        });
+      if (createdClaimData) {
+        setCreatedClaim(createdClaimData);
+        navigate(`claims/${createdClaimData.id}`);
+      }
+
+      const claimName = createdClaimData ? createdClaimData.id : 'OCR claim';
+      addNotification(`Ingestion success: ${pendingFiles.length} document(s) received for ${claimName} via ${source || 'manual upload'}`, 'ok', createdClaimData ? `#/claims/${createdClaimData.id}` : null);
+      toast(`${claimName} processed`, 'ok');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Upload failed';
+      addNotification(`Upload failed: ${msg}`, 'bad');
+      toast('Upload failed', 'bad');
+    }
+
+    for (let i = 2; i < steps.length; i++) {
+      setIngestProgress(Math.round(((i + 1) / steps.length) * 100));
+      currentStepList[i] = { ...currentStepList[i], done: true };
+      setIngestSteps([...currentStepList]);
+      await sleep(80);
     }
 
     setIngestProgress(100);
-    if (claim) {
-      addClaim(claim);
-      setCreatedClaim(claim);
-      addNotification(`Ingestion success: ${pendingFiles.length} document(s) received for ${claim.id} via ${source}`, 'ok', `#/claims/${claim.id}/documents`);
-      toast(`${claim.id} processed`, 'ok');
-    }
     setIsIngesting(false);
     setPendingFiles([]);
   };
@@ -231,11 +247,11 @@ export function IntakeView() {
                   <div className="field">
                     <label>Source channel</label>
                     <select value={source} onChange={e => setSource(e.target.value)}>
-                      <option>IHX</option>
-                      <option>ClaimBook</option>
-                      <option>Email (cashless@acme.com)</option>
-                      <option>SFTP</option>
-                      <option>Manual upload</option>
+                      <option value="">Select source</option>
+                      <option value="Manual upload">Manual upload</option>
+                      <option value="Email">Email intake</option>
+                      <option value="Portal">Portal intake</option>
+                      <option value="SFTP">SFTP batch</option>
                     </select>
                   </div>
                   <div className="field">
@@ -322,7 +338,6 @@ export function IntakeView() {
                     {pendingFiles.map((f, i) => (
                       <li key={i} className={f.error ? 'bad' : ''}>
                         <div className="fname">{f.name}</div>
-                        <div className="fmeta">{(f.size / 1048576).toFixed(1)} MB</div>
                         {f.error ? (
                           <div className="ferr">{f.error}</div>
                         ) : (
@@ -458,65 +473,30 @@ export function IntakeView() {
         </div>
       </div>
 
-      {/* Bottom row: Ingestion channels & Service health */}
-      <div className="grid g-2 mt">
+      {/* Bottom row: Ingestion channels */}
+      <div className="mt">
         <div className="card">
           <div className="card-head">
             <h3>Ingestion channels (today)</h3>
           </div>
           <div className="card-body">
-            {[
-              ['IHX', 95, 'Primary cashless feed'],
-              ['ClaimBook', 4, 'Empanelled hospitals without IHX'],
-              ['Email', 1, 'cashless@acme.com mailbox'],
-              ['SFTP', 0, 'Batch drops from TPAs'],
-            ].map(([n, p, d]) => (
-              <div key={n as string} className="bar-h">
-                <span className="lbl">
-                  {n}
-                  <br />
-                  <span className="small faint">{d}</span>
-                </span>
-                <span className="bar">
-                  <i style={{ width: `${p}%` }} />
-                </span>
-                <span className="val">{p}%</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="card">
-          <div className="card-head">
-            <h3>Service health</h3>
-            <span className="small muted">Live status of dependencies</span>
-          </div>
-          <div className="card-body">
-            {[
-              ['Document / OCR service', 'Degraded', 'var(--amber)', 'Circuit half-open after 504s; fallback OCR active'],
-              ['Classification service', 'Healthy', 'var(--green)', 'p95 0.8 s'],
-              ['Tariff DB', 'Healthy', 'var(--green)', '5 providers, 7 versions'],
-              ['Claim Core API', 'Healthy', 'var(--green)', 'Last sync 2 min ago'],
-              ['Provider / Contract master', 'Healthy', 'var(--green)', 'Nightly sync OK'],
-            ].map(([n, s, c, d]) => (
-              <div
-                key={n as string}
-                className="row"
-                style={{
-                  justifyContent: 'space-between',
-                  padding: '7px 0',
-                  borderBottom: '1px solid var(--line-soft)',
-                }}
-              >
-                <span>
-                  <span className="status-dot" style={{ background: c as string }} />
-                  {n}
-                </span>
-                <span className="small muted">
-                  {d} · <strong style={{ color: c as string }}>{s}</strong>
-                </span>
-              </div>
-            ))}
+            {channelData.length > 0 ? (
+              channelData.map(({ name, value, detail }) => (
+                <div key={name} className="bar-h">
+                  <span className="lbl">
+                    {name}
+                    <br />
+                    <span className="small faint">{detail}</span>
+                  </span>
+                  <span className="bar">
+                    <i style={{ width: `${value}%` }} />
+                  </span>
+                  <span className="val">{value}%</span>
+                </div>
+              ))
+            ) : (
+              <div className="small muted">No intake activity yet. Uploaded OCR claims will appear here.</div>
+            )}
           </div>
         </div>
       </div>

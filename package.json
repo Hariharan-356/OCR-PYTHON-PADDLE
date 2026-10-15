@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "next dev",
     "server": "tsx server/main.ts",
+    "ocr:service": ".\\.venv\\Scripts\\python.exe -m uvicorn ocr_service.app.main:app --host 127.0.0.1 --port 8001",
     "build": "next build",
     "build:server": "tsc -p tsconfig.server.json",
-    "start": "next start"
+    "start": "next start",
+    "test": "tsx --test server/**/*.test.ts"
   },
   "dependencies": {
     "@nestjs/common": "^12.1.2",

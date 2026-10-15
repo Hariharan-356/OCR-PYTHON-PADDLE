@@ -22,6 +22,14 @@ export class ClaimsService {
     return this.db.saveClaim(claim);
   }
 
+  upsertClaim(claim: Claim): Claim {
+    const existing = this.db.getClaimById(claim.id);
+    if (existing) {
+      return this.updateClaim(claim.id, claim);
+    }
+    return this.createClaim(claim);
+  }
+
   updateClaim(id: string, claimData: Partial<Claim>): Claim {
     const existing = this.getClaimById(id);
     const updated = {

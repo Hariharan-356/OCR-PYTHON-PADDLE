@@ -96,7 +96,11 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
 
   private seedData() {
     const claimCount = this.db.prepare('SELECT COUNT(*) as count FROM claims').get() as { count: number };
-    if (claimCount.count === 0) {
+    if (CLAIMS.length === 0) {
+      if (claimCount.count > 0) {
+        this.db.prepare('DELETE FROM claims').run();
+      }
+    } else if (claimCount.count === 0) {
       const insertClaim = this.db.prepare(`
         INSERT INTO claims (id, patient, memberId, policy, providerId, hospital, city, admission, discharge, admissionISO, source, receivedAt, status, stage, lob, claimType, billed, data, createdAt, updatedAt)
         VALUES (@id, @patient, @memberId, @policy, @providerId, @hospital, @city, @admission, @discharge, @admissionISO, @source, @receivedAt, @status, @stage, @lob, @claimType, @billed, @data, @createdAt, @updatedAt)
@@ -180,20 +184,53 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private sanitizeString(value: any): string {
+    const text = String(value ?? '').trim();
+    if (!text) return '';
+    if (/^(unidentified|unknown|not available|n\/a|not provided)/i.test(text)) {
+      return '';
+    }
+    return text;
+  }
+
+  private normalizeClaimRecord(claim: any): any {
+    if (!claim || typeof claim !== 'object') return claim;
+    const normalized = { ...claim };
+    const hospital = this.sanitizeString(normalized.hospital ?? normalized.facts?.hospital ?? '');
+    const patient = this.sanitizeString(normalized.patient ?? normalized.facts?.patient ?? '');
+    const city = this.sanitizeString(normalized.city ?? normalized.facts?.city ?? '');
+
+    normalized.hospital = hospital || '';
+    normalized.patient = patient || '';
+    normalized.city = city || '';
+
+    if (normalized.facts && typeof normalized.facts === 'object') {
+      normalized.facts = {
+        ...normalized.facts,
+        hospital: normalized.hospital || this.sanitizeString(normalized.facts.hospital ?? ''),
+        patient: normalized.patient || this.sanitizeString(normalized.facts.patient ?? ''),
+        city: normalized.city || this.sanitizeString(normalized.facts.city ?? ''),
+      };
+    }
+
+    return normalized;
+  }
+
   // Claim methods
   getAllClaims(): any[] {
     const rows = this.db.prepare('SELECT data FROM claims ORDER BY receivedAt DESC').all() as Array<{ data: string }>;
-    return rows.map(r => JSON.parse(r.data));
+    return rows.map(r => this.normalizeClaimRecord(JSON.parse(r.data)));
   }
 
   getClaimById(id: string): any | null {
     const row = this.db.prepare('SELECT data FROM claims WHERE id = ?').get(id) as { data: string } | undefined;
-    return row ? JSON.parse(row.data) : null;
+    return row ? this.normalizeClaimRecord(JSON.parse(row.data)) : null;
   }
 
   saveClaim(claim: any) {
+    const normalized = this.normalizeClaimRecord(claim);
     const now = new Date().toISOString();
-    const existing = this.db.prepare('SELECT id FROM claims WHERE id = ?').get(claim.id);
+    const existing = this.db.prepare('SELECT id FROM claims WHERE id = ?').get(normalized.id);
 
     if (existing) {
       this.db.prepare(`
@@ -218,24 +255,24 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
           updatedAt = @updatedAt
         WHERE id = @id
       `).run({
-        id: claim.id,
-        patient: claim.patient,
-        memberId: claim.memberId,
-        policy: claim.policy,
-        providerId: claim.providerId,
-        hospital: claim.hospital,
-        city: claim.city,
-        admission: claim.admission,
-        discharge: claim.discharge,
-        admissionISO: claim.admissionISO,
-        source: claim.source,
-        receivedAt: claim.receivedAt,
-        status: claim.status,
-        stage: claim.stage,
-        lob: claim.lob || 'Group Health',
-        claimType: claim.claimType || 'Cashless',
-        billed: claim.billed,
-        data: JSON.stringify(claim),
+        id: normalized.id,
+        patient: normalized.patient,
+        memberId: normalized.memberId,
+        policy: normalized.policy,
+        providerId: normalized.providerId,
+        hospital: normalized.hospital,
+        city: normalized.city,
+        admission: normalized.admission,
+        discharge: normalized.discharge,
+        admissionISO: normalized.admissionISO,
+        source: normalized.source,
+        receivedAt: normalized.receivedAt,
+        status: normalized.status,
+        stage: normalized.stage,
+        lob: normalized.lob || 'Group Health',
+        claimType: normalized.claimType || 'Cashless',
+        billed: normalized.billed,
+        data: JSON.stringify(normalized),
         updatedAt: now,
       });
     } else {
@@ -243,30 +280,30 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
         INSERT INTO claims (id, patient, memberId, policy, providerId, hospital, city, admission, discharge, admissionISO, source, receivedAt, status, stage, lob, claimType, billed, data, createdAt, updatedAt)
         VALUES (@id, @patient, @memberId, @policy, @providerId, @hospital, @city, @admission, @discharge, @admissionISO, @source, @receivedAt, @status, @stage, @lob, @claimType, @billed, @data, @createdAt, @updatedAt)
       `).run({
-        id: claim.id,
-        patient: claim.patient,
-        memberId: claim.memberId,
-        policy: claim.policy,
-        providerId: claim.providerId,
-        hospital: claim.hospital,
-        city: claim.city,
-        admission: claim.admission,
-        discharge: claim.discharge,
-        admissionISO: claim.admissionISO,
-        source: claim.source,
-        receivedAt: claim.receivedAt,
-        status: claim.status,
-        stage: claim.stage,
-        lob: claim.lob || 'Group Health',
-        claimType: claim.claimType || 'Cashless',
-        billed: claim.billed,
-        data: JSON.stringify(claim),
+        id: normalized.id,
+        patient: normalized.patient,
+        memberId: normalized.memberId,
+        policy: normalized.policy,
+        providerId: normalized.providerId,
+        hospital: normalized.hospital,
+        city: normalized.city,
+        admission: normalized.admission,
+        discharge: normalized.discharge,
+        admissionISO: normalized.admissionISO,
+        source: normalized.source,
+        receivedAt: normalized.receivedAt,
+        status: normalized.status,
+        stage: normalized.stage,
+        lob: normalized.lob || 'Group Health',
+        claimType: normalized.claimType || 'Cashless',
+        billed: normalized.billed,
+        data: JSON.stringify(normalized),
         createdAt: now,
         updatedAt: now,
       });
     }
 
-    return claim;
+    return normalized;
   }
 
   // Document methods

@@ -94,11 +94,18 @@ function parseHashString(hash: string): RouteState {
 }
 
 export function ClaimsProvider({ children }: { children: ReactNode }) {
-  const [claims, setClaims] = useState<Claim[]>(() => JSON.parse(JSON.stringify(CLAIMS)));
-  const [user, setUser] = useState<User>(() => USERS[0]);
+  const [claims, setClaims] = useState<Claim[]>([]);
+  const [user, setUser] = useState<User>(() => USERS[0] ?? {
+    id: 'system',
+    name: 'System user',
+    email: 'system@local',
+    role: 'Claims Processor',
+    status: 'Active',
+    lastLogin: new Date().toISOString(),
+  });
   const [users, setUsers] = useState<User[]>(() => [...USERS]);
   const [rules, setRules] = useState<RuleConfig>(() => JSON.parse(JSON.stringify(INITIAL_RULES)));
-  const [providers, setProviders] = useState<Provider[]>(() => [...PROVIDERS]);
+  const [providers, setProviders] = useState<Provider[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>(() => [...INITIAL_NOTIFS]);
   const [systemLogs, setSystemLogs] = useState<SystemLogItem[]>(() => [...INITIAL_LOGS]);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -169,15 +176,30 @@ export function ClaimsProvider({ children }: { children: ReactNode }) {
 
   // Sync with NestJS backend on mount
   useEffect(() => {
-    fetch('http://localhost:3001/api/claims')
-      .then(r => (r.ok ? r.json() : null))
-      .then(data => {
-        if (data && Array.isArray(data) && data.length > 0) {
-          setClaims(data);
+    Promise.all([
+      fetch('http://localhost:3001/api/claims').then(r => (r.ok ? r.json() : [])).catch(() => []),
+      fetch('http://localhost:3001/api/providers').then(r => (r.ok ? r.json() : [])).catch(() => []),
+      fetch('http://localhost:3001/api/rules').then(r => (r.ok ? r.json() : INITIAL_RULES)).catch(() => INITIAL_RULES),
+    ])
+      .then(([claimData, providerData, ruleData]) => {
+        if (Array.isArray(claimData)) {
+          setClaims(claimData);
+        } else {
+          setClaims([]);
+        }
+        if (Array.isArray(providerData)) {
+          setProviders(providerData);
+        } else {
+          setProviders([]);
+        }
+        if (ruleData && typeof ruleData === 'object') {
+          setRules(ruleData as RuleConfig);
         }
       })
       .catch(() => {
-        // Local fallback is already initialized
+        setClaims([]);
+        setProviders([]);
+        setRules(JSON.parse(JSON.stringify(INITIAL_RULES)));
       });
   }, []);
 

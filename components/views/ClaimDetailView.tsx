@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useClaimsStore } from '../../lib/store';
 import { fmtINR, fmtDT, STAGES, ago, uid } from '../../lib/data';
 import { matchClaim, tariffVersionForClaim } from '../../lib/engine';
@@ -9,6 +9,7 @@ import { Claim, ClaimField, ClaimDocument } from '../../lib/types';
 export function ClaimDetailView({ claimId }: { claimId: string }) {
   const {
     claims,
+    setClaims,
     updateClaim,
     rules,
     providers,
@@ -26,6 +27,43 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
 
   const claim = claims.find(c => c.id === claimId);
   const [activeTab, setActiveTab] = useState<string>('overview');
+
+  useEffect(() => {
+    if (!claimId) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const refreshClaim = async () => {
+      try {
+        const response = await fetch(`http://localhost:3001/api/claims/${claimId}`);
+        if (!response.ok) return;
+
+        const latestClaim = await response.json();
+        if (!cancelled && latestClaim && typeof latestClaim === 'object') {
+          setClaims(prev => {
+            const exists = prev.some(c => c.id === latestClaim.id);
+            return exists
+              ? prev.map(c => (c.id === latestClaim.id ? latestClaim : c))
+              : [latestClaim, ...prev];
+          });
+        }
+      } catch {
+        // Ignore transient refresh failures while the OCR job is still running.
+      }
+    };
+
+    refreshClaim();
+
+    if (claim?.status === 'Processing' || claim?.stage === 1 || !claim) {
+      timer = setInterval(refreshClaim, 2500);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [claimId, claim?.status, claim?.stage, setClaims]);
 
   // Review & correct tab state
   const [selectedDocId, setSelectedDocId] = useState<string>(claim?.docs[0]?.id || '');
@@ -65,6 +103,7 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
   );
 
   const currentDoc = claim.docs.find(d => d.id === selectedDocId) || claim.docs[0];
+  const isMissingFieldValue = (value: string | undefined) => !value || !String(value).trim() || /not extracted/i.test(String(value));
 
   const statusBadge = (s: string) => {
     const m: Record<string, string> = {
@@ -313,6 +352,15 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
     });
   }
 
+  const extractedDataSections: Record<string, ClaimField[]> = {};
+  if (currentDoc) {
+    currentDoc.fields.forEach(f => {
+      if (!f.value && !f.original) return;
+      if (!extractedDataSections[f.section]) extractedDataSections[f.section] = [];
+      extractedDataSections[f.section].push(f);
+    });
+  }
+
   const billItems = ['Hospital Bill', 'Pharmacy Bill'].includes(currentDoc?.type || '')
     ? claim.lineItems.filter(l => l.bill === currentDoc?.type)
     : [];
@@ -511,6 +559,49 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
                 </ul>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'overview' && currentDoc && (
+        <div className="card mb" style={{ marginTop: '18px' }}>
+          <div className="card-head" style={{ justifyContent: 'space-between' }}>
+            <h3>Extracted PDF data</h3>
+            <span className="small muted">{currentDoc.type} · {currentDoc.name}</span>
+          </div>
+          <div className="card-body">
+            {Object.keys(extractedDataSections).length > 0 ? (
+              <div className="grid g-2">
+                {Object.entries(extractedDataSections).map(([sectionName, sectionFields]) => (
+                  <div key={sectionName} className="card" style={{ background: 'var(--panel)', border: '1px solid var(--line-soft)' }}>
+                    <div className="card-head" style={{ padding: '10px 12px', borderBottom: '1px solid var(--line-soft)' }}>
+                      <h3>{sectionName}</h3>
+                    </div>
+                    <div className="card-body" style={{ padding: '10px 12px' }}>
+                      <dl className="kv" style={{ rowGap: '8px' }}>
+                        {sectionFields.map(field => (
+                          <React.Fragment key={field.id}>
+                            <dt>{field.label}</dt>
+                            <dd>
+                              <span>{field.value || '—'}</span>
+                              {field.conf > 0 && (
+                                <span className="small muted" style={{ marginLeft: '8px' }}>
+                                  ({field.conf}% confidence)
+                                </span>
+                              )}
+                            </dd>
+                          </React.Fragment>
+                        ))}
+                      </dl>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty" style={{ padding: '18px', textAlign: 'center' }}>
+                No OCR-extracted fields available for this document yet.
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -756,6 +847,11 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
                                 <i></i>
                                 {f.verified ? 'Verified' : `${f.conf}%`}
                               </span>
+                              {isMissingFieldValue(f.value) && (
+                                <span className="small muted" style={{ color: '#b45309', marginLeft: '8px' }}>
+                                  Not extracted
+                                </span>
+                              )}
                             </div>
 
                             {isEditing ? (
@@ -786,6 +882,11 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
                               <>
                                 <div className={`fv ${f.value !== f.original ? 'edited' : ''}`}>
                                   {f.value}
+                                  {isMissingFieldValue(f.value) && (
+                                    <span className="small muted" style={{ color: '#b45309', display: 'block' }}>
+                                      Warning: field could not be extracted. Please fill it manually.
+                                    </span>
+                                  )}
                                   {f.value !== f.original && (
                                     <span className="small muted"> (was {f.original})</span>
                                   )}

@@ -70,11 +70,14 @@ export function Sidebar() {
     },
   ];
 
-  const userInitials = user.name
-    .split(' ')
+  const userInitials = (user.name || 'U')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
     .map(w => w[0])
     .join('')
-    .slice(0, 2);
+    .slice(0, 2)
+    .toUpperCase() || 'U';
 
   return (
     <nav className="rail" id="rail">
@@ -120,7 +123,7 @@ export function Sidebar() {
           <div id="rail-username">{user.name}</div>
           <select
             id="role-switch"
-            title="Switch active user (demo)"
+            title="Switch active user"
             value={user.id}
             onChange={e => {
               const selected = users.find(u => u.id === e.target.value);
@@ -130,13 +133,11 @@ export function Sidebar() {
               }
             }}
           >
-            {users
-              .filter(u => u.status === 'Active')
-              .map(u => (
-                <option key={u.id} value={u.id}>
-                  {u.role}
-                </option>
-              ))}
+            {users.map(u => (
+              <option key={u.id} value={u.id}>
+                {u.name} · {u.role}
+              </option>
+            ))}
           </select>
         </div>
       </div>
