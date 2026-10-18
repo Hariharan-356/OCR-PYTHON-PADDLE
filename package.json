@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "next dev",
     "server": "tsx server/main.ts",
-    "ocr:service": ".\\.venv\\Scripts\\python.exe -m uvicorn ocr_service.app.main:app --host 127.0.0.1 --port 8001",
     "build": "next build",
     "build:server": "tsc -p tsconfig.server.json",
     "start": "next start",
@@ -21,13 +20,16 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "better-sqlite3": "^13.0.3",
+    "canvas": "^3.2.3",
     "lucide-react": "^1.55.0",
     "multer": "^2.4.0",
     "next": "^16.4.0",
+    "pdfjs-dist": "^6.4.299",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
+    "tesseract.js": "^7.0.0",
     "typescript": "^7.0.2"
   },
   "devDependencies": {

@@ -155,8 +155,8 @@ export class ClaimsController {
     const targetClaimId = claimId || uid('CLM');
     let targetClaimExists = false;
     try {
-      this.claimsService.getClaimById?.(targetClaimId);
-      targetClaimExists = true;
+      const existingClaim = this.claimsService.getClaimById?.(targetClaimId);
+      targetClaimExists = !!existingClaim;
     } catch {
       targetClaimExists = false;
     }

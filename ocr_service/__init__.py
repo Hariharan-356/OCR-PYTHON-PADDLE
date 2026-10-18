@@ -1,1 +1,0 @@
-"""ClaimsDigi OCR service package."""

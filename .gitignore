@@ -28,6 +28,9 @@ uploads/
 *.log
 npm-debug.log*
 
+# Trained data
+*.traineddata
+
 # TypeScript generated files
 
 *.tsbuildinfo

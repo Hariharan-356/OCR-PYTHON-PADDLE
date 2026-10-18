@@ -104,6 +104,9 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
 
   const currentDoc = claim.docs.find(d => d.id === selectedDocId) || claim.docs[0];
   const isMissingFieldValue = (value: string | undefined) => !value || !String(value).trim() || /not extracted/i.test(String(value));
+  const claimHospitalName = (claim.hospital || 'Unidentified hospital').split(',')[0].trim() || 'Hospital';
+  const doctorSignatureName = (claim.facts?.doctor || '').replace(/^Dr\.?\s*/i, '').trim();
+  const safeFieldHistory = (field: ClaimField) => (Array.isArray(field.history) ? field.history : []);
 
   const statusBadge = (s: string) => {
     const m: Record<string, string> = {
@@ -164,7 +167,7 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
               value: val,
               verified: true,
               history: [
-                ...f.history,
+                ...safeFieldHistory(f),
                 { ts: new Date().toISOString(), user: user.name, before, after: val },
               ],
             };
@@ -206,7 +209,10 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
             return {
               ...f,
               verified: true,
-              history: [...f.history, { ts: new Date().toISOString(), user: user.name, action: 'Confirmed' }],
+              history: [
+                ...safeFieldHistory(f),
+                { ts: new Date().toISOString(), user: user.name, action: 'Confirmed' },
+              ],
             };
           }),
         };
@@ -505,7 +511,7 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
                 <dt>Primary complaint</dt>
                 <dd>{claim.facts.complaint || 'Acute condition'}</dd>
                 <dt>Treating doctor</dt>
-                <dd>{claim.facts.doctor}</dd>
+                <dd>{claim.facts?.doctor || 'Not extracted'}</dd>
                 <dt>Hospital registration</dt>
                 <dd>{claim.facts.hospReg || 'TN/CHN/2011/04521'}</dd>
                 <dt>ROHINI code</dt>
@@ -752,7 +758,7 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
               <div className="doc-page">
                 <div className={`paper ${currentDoc?.handwritten ? 'hand' : ''} scan`}>
                   {currentDoc?.detections.includes('logo') && (
-                    <div className="logo">{claim.hospital.split(',')[0]}</div>
+                    <div className="logo">{claimHospitalName}</div>
                   )}
                   <h4>
                     {currentDoc?.type.toUpperCase()}
@@ -806,13 +812,13 @@ export function ClaimDetailView({ claimId }: { claimId: string }) {
 
                   {currentDoc?.detections.includes('stamp') && (
                     <div className="stamp">
-                      {claim.hospital.split(',')[0]}
+                      {claimHospitalName}
                       <br />
                       SEAL
                     </div>
                   )}
-                  {currentDoc?.detections.includes('signature') && (
-                    <div className="sig">{claim.facts.doctor.replace('Dr. ', '')}</div>
+                  {currentDoc?.detections.includes('signature') && doctorSignatureName && (
+                    <div className="sig">{doctorSignatureName}</div>
                   )}
                 </div>
               </div>

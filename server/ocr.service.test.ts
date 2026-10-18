@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NotFoundException } from '@nestjs/common';
@@ -190,6 +191,228 @@ test('OCR result mapping ignores generic placeholder hospital names when a real 
 
   assert.equal(claim.hospital, 'Apollo Hospitals, Chennai');
   assert.equal(claim.facts.hospital, 'Apollo Hospitals, Chennai');
+});
+
+test('OCR text parser extracts common hospital-bill fields using real label patterns', () => {
+  const service = new OcrService({
+    getAllClaims: () => [],
+    createClaim: () => undefined,
+    updateClaim: () => undefined,
+  } as any);
+
+  const result = (service as any).buildResultFromText('hospital_bill.pdf', 'uploads/hospital_bill.pdf', [
+    'Name of the Hospital: Apollo Hospitals, Chennai',
+    'Name of the patient: Sandeep Sharma',
+    'Member ID: MEM-7781203',
+    'Policy No.: GHP-2026-009090',
+    'Date of Admission: 12/09/2026',
+    'Date of Discharge: 18/09/2026',
+    'Total Amount Paid: Rs 1,46,250.00',
+  ].join('\n'));
+
+  assert.equal(result.facts.hospital, 'Apollo Hospitals, Chennai');
+  assert.equal(result.facts.patient, 'Sandeep Sharma');
+  assert.equal(result.facts.memberId, 'MEM-7781203');
+  assert.equal(result.facts.policy, 'GHP-2026-009090');
+  assert.equal(result.facts.admission, '12/09/2026');
+  assert.equal(result.facts.discharge, '18/09/2026');
+  assert.equal(result.facts.billed, 146250);
+});
+
+test('OCR prefers Google Document AI when configured and falls back to Tesseract otherwise', async () => {
+  const service = new OcrService({
+    getAllClaims: () => [],
+    createClaim: () => undefined,
+    updateClaim: () => undefined,
+  } as any);
+
+  const previousEnv = { ...process.env };
+  const previousFetch = globalThis.fetch;
+  const tempPath = 'report.pdf';
+
+  process.env.GOOGLE_DOCUMENT_AI_PROJECT_ID = 'demo-project';
+  process.env.GOOGLE_DOCUMENT_AI_LOCATION = 'us';
+  process.env.GOOGLE_DOCUMENT_AI_PROCESSOR_ID = 'demo-processor';
+  process.env.GOOGLE_DOCUMENT_AI_API_KEY = 'demo-api-key';
+
+  fs.writeFileSync(tempPath, 'dummy pdf content');
+
+  globalThis.fetch = async (input: RequestInfo | URL) => {
+    const url = String(input);
+    assert.match(url, /demo-project/);
+    return {
+      ok: true,
+      async json() {
+        return {
+          document: {
+            text: 'Name of the patient: Rahul Kumar\nPolicy No.: GHP-2026-777777',
+          },
+        };
+      },
+    } as Response;
+  };
+
+  try {
+    const text = await (service as any).recognizeFile(tempPath);
+    assert.match(text, /Rahul Kumar/);
+    assert.match(text, /GHP-2026-777777/);
+  } finally {
+    process.env = previousEnv;
+    globalThis.fetch = previousFetch;
+    if (fs.existsSync(tempPath)) {
+      fs.unlinkSync(tempPath);
+    }
+  }
+});
+
+test('OCR text parser extracts hospital address from alias labels and retains the full address value', () => {
+  const service = new OcrService({
+    getAllClaims: () => [],
+    createClaim: () => undefined,
+    updateClaim: () => undefined,
+  } as any);
+
+  const result = (service as any).buildResultFromText('hospital_bill.pdf', 'uploads/hospital_bill.pdf', [
+    'Name of the Hospital: Apollo Hospitals, Chennai',
+    'Hospital Address: No. 21, Greams Road, Chennai, Tamil Nadu - 600006',
+    'Name of the patient: Sandeep Sharma',
+    'Member ID: MEM-7781203',
+    'Policy No.: GHP-2026-009090',
+    'Date of Admission: 12/09/2026',
+    'Date of Discharge: 18/09/2026',
+    'Total Amount Paid: Rs 1,46,250.00',
+  ].join('\n'));
+
+  assert.equal(result.facts.hospital, 'Apollo Hospitals, Chennai');
+  assert.equal(result.facts.hospAddress, 'No. 21, Greams Road, Chennai, Tamil Nadu - 600006');
+  const addressField = result.documents[0].fields.find((field: any) => field.label === 'Address of biller');
+  assert.ok(addressField);
+  assert.equal(addressField.value, 'No. 21, Greams Road, Chennai, Tamil Nadu - 600006');
+});
+
+test('OCR text parser keeps full multi-line hospital addresses together', () => {
+  const service = new OcrService({
+    getAllClaims: () => [],
+    createClaim: () => undefined,
+    updateClaim: () => undefined,
+  } as any);
+
+  const result = (service as any).buildResultFromText('hospital_bill.pdf', 'uploads/hospital_bill.pdf', [
+    'Name of the Hospital: Greenfield General Hospital',
+    'Hospital Address:',
+    '78, 100 Feet Road, Indiranagar, Bengaluru, Karnataka - 560038',
+    'Name of the patient: Ananya Iyer',
+    'Member ID: MEM-7781203',
+    'Policy No.: GHP-2026-009090',
+    'Date of Admission: 21/10/2026',
+    'Date of Discharge: 25/10/2026',
+    'Total Amount Paid: Rs 61,425.00',
+  ].join('\n'));
+
+  const expected = '78, 100 Feet Road, Indiranagar, Bengaluru, Karnataka - 560038';
+  assert.equal(result.facts.hospAddress, expected);
+  const addressField = result.documents[0].fields.find((field: any) => field.label === 'Address of biller');
+  assert.ok(addressField);
+  assert.equal(addressField.value, expected);
+});
+
+test('OCR text parser accepts real-world alias labels used by different hospitals', () => {
+  const service = new OcrService({
+    getAllClaims: () => [],
+    createClaim: () => undefined,
+    updateClaim: () => undefined,
+  } as any);
+
+  const result = (service as any).buildResultFromText('sample_bill.pdf', 'uploads/sample_bill.pdf', [
+    'Hospital Name: Sunrise Multispeciality Hospital',
+    'Patient Name: Hariharan',
+    'UHID / Member Number: M-99011234',
+    'Policy Number: 29AABCA0000X1ZQ',
+    'Admission Date: 14/10/2026',
+    'Discharge Date: 16/10/2026',
+    'Final Settlement Amount: Rs 52,500.00',
+  ].join('\n'));
+
+  assert.equal(result.facts.hospital, 'Sunrise Multispeciality Hospital');
+  assert.equal(result.facts.patient, 'Hariharan');
+  assert.equal(result.facts.memberId, 'M-99011234');
+  assert.equal(result.facts.policy, '29AABCA0000X1ZQ');
+  assert.equal(result.facts.admission, '14/10/2026');
+  assert.equal(result.facts.discharge, '16/10/2026');
+  assert.equal(result.facts.billed, 52500);
+});
+
+test('OCR text parser captures the attached hospital bill layout without swallowing the next field', () => {
+  const service = new OcrService({
+    getAllClaims: () => [],
+    createClaim: () => undefined,
+    updateClaim: () => undefined,
+  } as any);
+
+  const result = (service as any).buildResultFromText('sunrise_bill.pdf', 'uploads/sunrise_bill.pdf', [
+    'Sunrise Multispeciality Hospital',
+    '45, Avinashi Road, Peelamedu, Coimbatore, Tamil Nadu - 641004',
+    'Hospital Reg. No.: TN/CBE/HOS/2014/08721 | GST No.: 29AABCA0000X1ZQ',
+    'HOSPITAL BILL',
+    'Bill No. HB/2026/600112 Bill Date 2026-10-16',
+    'Name of Patient Hariharan Treating Doctor Dr. Rajesh Kumar, MS (Ortho)',
+    'Date of Admission 14/10/2026 Date of Discharge 16/10/2026',
+    'Gross Amount 52,000.00',
+    'Discount 2,000.00',
+    'GST Amount (5%) 2,500.00',
+    'Total Amount Paid 52,500.00',
+  ].join('\n'));
+
+  assert.equal(result.facts.hospital, 'Sunrise Multispeciality Hospital');
+  assert.equal(result.facts.patient, 'Hariharan');
+  assert.equal(result.facts.admission, '14/10/2026');
+  assert.equal(result.facts.discharge, '16/10/2026');
+  assert.equal(result.facts.billed, 52500);
+  assert.equal(result.facts.billNo, 'HB/2026/600112');
+  assert.equal(result.facts.billDate, '2026-10-16');
+});
+
+test('OCR text parser handles the Indian multi-column hospital bill layout in the screenshot', () => {
+  const service = new OcrService({
+    getAllClaims: () => [],
+    createClaim: () => undefined,
+    updateClaim: () => undefined,
+  } as any);
+
+  const result = (service as any).buildResultFromText('sri_lakshmi_bill.pdf', 'uploads/sri_lakshmi_bill.pdf', [
+    'Sri Lakshmi Multi Speciality Hospital',
+    '78, 100 Feet Road, Indiranagar, Bengaluru, Karnataka - 560038',
+    'Hospital Reg. No.: TN/CBE/HOS/2014/08721 | GST No.: 29AABCA0000X1ZQ',
+    'HOSPITAL BILL',
+    'Bill No. SHL/BL/2026/09876 Bill Date 22-09-2026',
+    'Patient Name: RAMESH KUMAR S',
+    'Age / Gender : 56 Yrs / Male',
+    'Patient ID : SLH/INP/2026/0145',
+    'UHID : 10345676',
+    'Admission No : IP26091567',
+    'Consultant : Dr. Anitha Rao (Cardiology)',
+    'Department : Cardiology',
+    'Room Type : Deluxe Room',
+    'Date of Admission 22-09-2026 Date of Discharge 22-09-2026',
+    'Gross Amount 1,06,200.00',
+    'Discount 5,000.00',
+    'GST Amount (9%) 8,100.00',
+    'Total Amount Paid 1,06,200.00',
+  ].join('\n'));
+
+  assert.equal(result.facts.hospital, 'Sri Lakshmi Multi Speciality Hospital');
+  assert.equal(result.facts.hospAddress, '78, 100 Feet Road, Indiranagar, Bengaluru, Karnataka - 560038');
+  assert.equal(result.facts.city, 'Bengaluru');
+  assert.equal(result.facts.hospReg, 'TN/CBE/HOS/2014/08721');
+  assert.equal(result.facts.gstNo, '29AABCA0000X1ZQ');
+  assert.equal(result.facts.patient, 'RAMESH KUMAR S');
+  assert.equal(result.facts.patientId, 'SLH/INP/2026/0145');
+  assert.equal(result.facts.memberId, '10345676');
+  assert.equal(result.facts.billNo, 'SHL/BL/2026/09876');
+  assert.equal(result.facts.billDate, '22-09-2026');
+  assert.equal(result.facts.admission, '22-09-2026');
+  assert.equal(result.facts.discharge, '22-09-2026');
+  assert.equal(result.facts.billed, 106200);
 });
 
 test('OCR enqueue keeps the remote OCR job id for polling and result fetches', async () => {
